@@ -2,6 +2,31 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<script>
+/* 새 버전 자동 반영: 서버의 파일이 바뀌었는데 예전 캐시로 열렸다면 최신본으로 한 번 다시 불러와요 */
+(function(){
+  try{
+    var base=location.href.split("#")[0].split("?")[0];
+    fetch(base,{method:"HEAD",cache:"no-store"}).then(function(r){
+      if(!r.ok) return;
+      var sig=(r.headers.get("etag")||"")+"|"+(r.headers.get("last-modified")||"")+"|"+(r.headers.get("content-length")||"");
+      if(sig==="||") return;
+      var k="dex-build-sig", old=localStorage.getItem(k);
+      localStorage.setItem(k,sig);
+      if(!old||old===sig) return;
+      var nav=(performance.getEntriesByType&&performance.getEntriesByType("navigation")||[])[0];
+      var fromCache=!nav||nav.transferSize===0;
+      if(fromCache&&!sessionStorage.getItem("dex-reloaded")){
+        sessionStorage.setItem("dex-reloaded","1");
+        location.replace(base+"?v="+Date.now()+location.hash);
+      }
+    }).catch(function(){});
+  }catch(e){}
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>낮과밤 꽃 도감</title>
 <style id="css">:root{
