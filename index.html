@@ -5,8 +5,8 @@
 <script>
 /* ===== Supabase 설정: 아래 두 값만 내 프로젝트 것으로 바꿔 주세요 (Supabase → Project Settings → API) ===== */
 window.SUPABASE_CONFIG={
-  url:"여기에 Project URL (예: https://abcdefgh.supabase.co)",
-  key:"여기에 anon public key"
+  url:"https://oxglnejaejaekheuyrke.supabase.co",
+  key:"sb_publishable_z_48B-1rtHAbNR6PHQf4EQ_rPnMCp2a"
 };
 /* ================================================================================================= */
 </script>
@@ -546,7 +546,7 @@ const PASS="10275"; // 관리자 비밀번호 (바꾸려면 여기 숫자를 수
 let ADMIN_PW="", polling=false, again=false, lastSig="", warned=false;
 async function sbFetch(path,opt){
   const o=opt||{};
-  const r=await fetch(SB_URL+"/rest/v1/"+path,{method:o.method||"GET",headers:Object.assign({apikey:SB_KEY,Authorization:"Bearer "+SB_KEY,"Content-Type":"application/json"},o.headers||{}),body:o.body});
+  const r=await fetch(SB_URL+"/rest/v1/"+path,{method:o.method||"GET",headers:Object.assign({apikey:SB_KEY,"Content-Type":"application/json"},SB_KEY.indexOf("sb_")===0?{}:{Authorization:"Bearer "+SB_KEY},o.headers||{}),body:o.body});
   if(!r.ok){ const t=await r.text(); throw new Error(t||String(r.status)); }
   const t=await r.text(); return t?JSON.parse(t):null;
 }
