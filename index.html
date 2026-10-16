@@ -149,7 +149,8 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const DATA=JSON.parse(document.getElementById("data").textContent);
 const IMGS=JSON.parse(document.getElementById("imgs").textContent);
-const BASE=DATA.map((r,i)=>({id:i,pt:r[0],name:r[1],chars:r[2].slice(),imgKey:r[1],base:true}));
+const BASE=DATA.map((r,i)=>({id:i,pt:r[0],name:r[1],chars:r[2].slice(),imgKey:r[1],base:true,pts:r[1]==="베들레헴의 별"?[21,23]:[r[0]]}));
+const hasPt=(f,p)=>(f.pts||[f.pt]).includes(p);
 let FLOWERS=BASE.slice();
 
 const BODY=`
@@ -231,7 +232,7 @@ function members(){
 
 function buildFilters(){
   $("#ptRow").innerHTML=`<button class="pill ${state.pt==="all"?"on":""}" data-pt="all">전체 점수</button>`+
-    PTS.map(p=>`<button class="pill ${String(state.pt)===String(p)?"on":""}" data-pt="${p}">${p}점 (${FLOWERS.filter(f=>f.pt===p).length})</button>`).join("");
+    PTS.map(p=>`<button class="pill ${String(state.pt)===String(p)?"on":""}" data-pt="${p}">${p}점 (${FLOWERS.filter(f=>hasPt(f,p)).length})</button>`).join("");
   $("#char").innerHTML=`<option value="">길드원 전체</option>`+members().map(([c])=>`<option${state.char===c?" selected":""}>${esc(c)}</option>`).join("");
 }
 buildFilters();
@@ -293,7 +294,7 @@ function fitPics(){
 }
 function render(){
   let list=FLOWERS.filter(f=>{
-    if(state.pt!=="all" && f.pt!==+state.pt) return false;
+    if(state.pt!=="all" && !hasPt(f,+state.pt)) return false;
     if(state.char && !chars(f).includes(state.char)) return false;
     if(state.q && !f.name.replace(/\s/g,"").includes(state.q.replace(/\s/g,""))) return false;
     return true;
@@ -313,7 +314,7 @@ function render(){
     const inBase=!!(me&&f.chars.some(c=>mapName(c)===me&&!(rmSet&&rmSet.has(c))));
     const inDb=!!(me&&[...(dbClaims.get(f.id)||[])].some(r=>mapName(r)===me));
     return `<div class="card" data-id="${f.id}">
-      <div class="top"><span class="pt p${f.pt}">${f.pt}점</span></div>
+      <div class="top">${(f.pts||[f.pt]).map(p=>`<span class="pt p${p}">${p}점</span>`).join("")}</div>
       ${(f.img||IMGS[f.imgKey])?`<div class="pic"><img src="${(f.img||IMGS[f.imgKey])}" alt="${esc(f.name)}" loading="lazy"></div>`:""}
       <div class="name">${esc(f.name)}</div>
       <div class="chips">${shown.map(c=>`<span class="chip">${esc(c)}</span>`).join("")}${rest>0?`<span class="chip more" data-more="${f.id}">+${rest}</span>`:""}${all.length?"":`<span class="chip">등록된 길드원 없음</span>`}</div>
