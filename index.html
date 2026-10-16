@@ -493,14 +493,9 @@ function renderList(){
 }
 function openAdmin(){ adOpen=true; adTab="mem"; adEdit=null; syncTabs(); buildTab(); $("#adM").hidden=false; }
 function closeAdmin(){ adOpen=false; adminOK=false; ADMIN_PW=""; adEdit=null; $("#adM").hidden=true; }
-async function tryPw(){
-  if(!SB_READY){ $("#pwErr").textContent="Supabase 설정이 아직 안 되어 있어요."; return; }
-  const pw=$("#pwIn").value; $("#pwErr").textContent="확인 중...";
-  try{
-    const ok=await rpc("admin_check",{p_pw:pw});
-    if(ok===true){ ADMIN_PW=pw; adminOK=true; $("#pwErr").textContent=""; $("#pwM").hidden=true; openAdmin(); }
-    else $("#pwErr").textContent="비밀번호가 맞지 않아요.";
-  }catch(e){ $("#pwErr").textContent="서버에 연결하지 못했어요."; }
+function tryPw(){
+  if($("#pwIn").value===PASS){ ADMIN_PW=PASS; adminOK=true; $("#pwErr").textContent=""; $("#pwM").hidden=true; openAdmin(); }
+  else $("#pwErr").textContent="비밀번호가 맞지 않아요.";
 }
 $("#adminOpen").addEventListener("click",()=>{
   $("#pwIn").value=""; $("#pwErr").textContent=""; $("#pwM").hidden=false; setTimeout(()=>$("#pwIn").focus(),50);
@@ -543,10 +538,11 @@ adBody.addEventListener("click",e=>{
   else if(b.id==="fAdd") run(async()=>{ await addFlower($("#fName").value,$("#fPt").value,adImg); toast("꽃을 등록했어요!"); buildTab(); });
 });
 
-/* ---------- Supabase 연결 ---------- */
+/* ---------- Supabase 연결 (docs 테이블: path / data) ---------- */
 const SB_URL=((window.SUPABASE_CONFIG||{}).url||"").trim().replace(/\/+$/,"");
 const SB_KEY=((window.SUPABASE_CONFIG||{}).key||"").trim();
 const SB_READY=/^https:\/\/[a-z0-9-]+\.supabase\.(co|in)$/i.test(SB_URL)&&SB_KEY.length>20;
+const PASS="10275"; // 관리자 비밀번호 (바꾸려면 여기 숫자를 수정하세요)
 let ADMIN_PW="", polling=false, again=false, lastSig="", warned=false;
 async function sbFetch(path,opt){
   const o=opt||{};
@@ -562,31 +558,32 @@ async function sbAll(path){
   }
   return out;
 }
-function rpc(fn,args){ return sbFetch("rpc/"+fn,{method:"POST",body:JSON.stringify(args)}); }
-const TBL={claims:"claims",members:"member_ops",flowers:"flower_ops"};
+const dbUpsert=(path,data)=>sbFetch("docs?on_conflict=path",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({path,data})});
+const dbDel=path=>sbFetch("docs?path=eq."+encodeURIComponent(path),{method:"DELETE",headers:{Prefer:"return=minimal"}});
 const imgCache=new Map();
 function makeDb(){
   return { doc(path){
-    const i=path.indexOf("/"), col=path.slice(0,i), key=path.slice(i+1), tbl=TBL[col];
+    const parts=path.split("/"), col=parts[0], key=parts[1];
     return {
       async set(v){
-        if(col==="claims"){
-          await sbFetch("claims",{method:"POST",headers:{Prefer:"resolution=ignore-duplicates,return=minimal"},body:JSON.stringify({k:key,f:v.f,n:v.n})});
-        }else{
-          if(!ADMIN_PW) throw new Error("no admin");
-          const data=Object.assign({},v); let img=null;
-          if(col==="flowers"&&typeof data.img==="string"){
-            const c=imgCache.get(key);
-            if(data.img&&!(c&&c.img===data.img)) img=data.img;
-            data.hasImg=!!data.img; delete data.img;
+        if(col!=="claims"&&!ADMIN_PW) throw new Error("no admin");
+        const data=Object.assign({},v);
+        if(col==="flowers"&&typeof data.img==="string"){
+          const c=imgCache.get(key);
+          if(data.img&&!(c&&c.img===data.img)){
+            const iv=Date.now(); data.iv=iv;
+            await dbUpsert("flowerimg/"+key,{img:data.img});
+            imgCache.set(key,{iv,img:data.img});
           }
-          await rpc("admin_set",{p_pw:ADMIN_PW,p_tbl:tbl,p_k:key,p_data:data,p_img:img});
+          data.hasImg=!!data.img; delete data.img;
         }
+        await dbUpsert(path,data);
         pollNow();
       },
       async delete(){
-        if(col==="claims") await sbFetch("claims?k=eq."+encodeURIComponent(key),{method:"DELETE",headers:{Prefer:"return=minimal"}});
-        else{ if(!ADMIN_PW) throw new Error("no admin"); await rpc("admin_del",{p_pw:ADMIN_PW,p_tbl:tbl,p_k:key}); }
+        if(col!=="claims"&&!ADMIN_PW) throw new Error("no admin");
+        await dbDel(path);
+        if(col==="flowers") await dbDel("flowerimg/"+key);
         pollNow();
       }
     };
@@ -596,36 +593,33 @@ async function poll(){
   if(polling){ again=true; return; }
   polling=true;
   try{
-    const [cl,mo,fo]=await Promise.all([
-      sbAll("claims?select=f,n&order=k"),
-      sbAll("member_ops?select=k,data&order=k"),
-      sbAll("flower_ops?select=k,data,updated_at&order=k")
-    ]);
-    const sig=JSON.stringify([cl,mo,fo]);
+    const rows=await sbAll("docs?select=path,data&path=not.like.flowerimg/*&order=path");
+    const sig=JSON.stringify(rows);
     if(sig!==lastSig){
       const imgs=new Map();
-      for(const r of fo){
-        const v=r.data||{};
+      for(const r of rows){
+        if(r.path.indexOf("flowers/n")!==0) continue;
+        const v=r.data||{}, key=r.path.slice(8);
         if(v.k==="n"&&v.hasImg){
-          const c=imgCache.get(r.k);
-          if(c&&c.u===r.updated_at) imgs.set(r.k,c.img);
-          else{ const x=await sbFetch("flower_ops?select=img&k=eq."+encodeURIComponent(r.k)); const im=(x&&x[0]&&x[0].img)||""; imgCache.set(r.k,{u:r.updated_at,img:im}); imgs.set(r.k,im); }
+          const c=imgCache.get(key);
+          if(c&&c.iv===v.iv) imgs.set(key,c.img);
+          else{ const x=await sbFetch("docs?select=data&path=eq."+encodeURIComponent("flowerimg/"+key)); const im=(x&&x[0]&&x[0].data&&x[0].data.img)||""; imgCache.set(key,{iv:v.iv,img:im}); imgs.set(key,im); }
         }
       }
-      dbClaims.clear();
-      cl.forEach(v=>{ if(Number.isInteger(v.f)&&typeof v.n==="string"){ if(!dbClaims.has(v.f)) dbClaims.set(v.f,new Set()); dbClaims.get(v.f).add(v.n); } });
-      memDocs.clear();
-      mo.forEach(r=>{
+      dbClaims.clear(); memDocs.clear(); flowerDocs.clear();
+      rows.forEach(r=>{
         const v=r.data; if(!v) return;
-        if(v.t==="add"&&typeof v.n==="string") memDocs.set(v.n,v);
-        else if(v.t==="ren"&&typeof v.from==="string"&&typeof v.to==="string") memDocs.set(v.from,v);
-        else if(v.t==="del"&&typeof v.n==="string") memDocs.set(v.n,v);
-      });
-      flowerDocs.clear();
-      fo.forEach(r=>{
-        const v=Object.assign({},r.data||{});
-        if(v.k==="b"&&Number.isInteger(v.i)) flowerDocs.set("b"+v.i,v);
-        else if(v.k==="n"&&Number.isInteger(v.id)){ v.img=imgs.get(r.k)||""; flowerDocs.set("n"+v.id,v); }
+        if(r.path.indexOf("claims/")===0){
+          if(Number.isInteger(v.f)&&typeof v.n==="string"){ if(!dbClaims.has(v.f)) dbClaims.set(v.f,new Set()); dbClaims.get(v.f).add(v.n); }
+        }else if(r.path.indexOf("members/")===0){
+          if(v.t==="add"&&typeof v.n==="string") memDocs.set(v.n,v);
+          else if(v.t==="ren"&&typeof v.from==="string"&&typeof v.to==="string") memDocs.set(v.from,v);
+          else if(v.t==="del"&&typeof v.n==="string") memDocs.set(v.n,v);
+        }else if(r.path.indexOf("flowers/")===0){
+          const o=Object.assign({},v);
+          if(o.k==="b"&&Number.isInteger(o.i)) flowerDocs.set("b"+o.i,o);
+          else if(o.k==="n"&&Number.isInteger(o.id)){ o.img=imgs.get(r.path.slice(8))||""; flowerDocs.set("n"+o.id,o); }
+        }
       });
       lastSig=sig; rebuildFlowers(); refreshAll();
     }
