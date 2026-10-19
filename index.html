@@ -137,7 +137,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:30px}
 .pic img{position:relative;z-index:1;display:block;width:100%;height:100%;object-fit:cover;object-position:50% 20%}
 .pic.contain img{object-fit:contain;object-position:50% 50%}
 .pic.contain::before{content:"";position:absolute;inset:-24px;background:var(--bg) center/cover no-repeat;filter:blur(22px) saturate(1.1)}
-.item .pill{padding:4px 10px;font-size:12px;flex:none}.item input{padding:6px 10px;flex:1}.item span{word-break:keep-all}.tabs .pill{flex:1}</style>
+.item .pill{padding:4px 10px;font-size:12px;flex:none}.item input{padding:6px 10px;flex:1}.item span{word-break:keep-all}.tabs .pill{flex:1}.sug{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;max-height:150px;overflow:auto;-webkit-overflow-scrolling:touch}.sug .pill{padding:6px 12px}.item select{padding:6px 8px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);flex:none;width:auto}</style>
 </head>
 <body>
 <div id="root"></div>
@@ -178,7 +178,8 @@ const BODY=`
     <div class="row" id="ptRow"></div>
   </div>
   <div class="panel meBar">
-    <div class="row"><b>🙋 내 이름</b><input id="meName" list="memberList" placeholder="길드원 이름 입력/선택" autocomplete="off"><datalist id="memberList"></datalist></div>
+    <div class="row"><b>🙋 내 이름</b><input id="meName" placeholder="길드원 이름 입력/선택" autocomplete="off"></div>
+    <div class="sug" id="meSug" hidden></div>
     <div class="hint">내 이름을 입력하고 꽃 카드의 "나도 있어요 +"를 누르면 그 꽃 밑에 내 이름이 바로 추가돼요. 잘못 눌렀으면 같은 버튼을 다시 누르면 취소돼요.</div></div>
   <div class="count" id="count"></div>
   <div class="grid" id="grid"></div>
@@ -211,7 +212,7 @@ function chars(f){
 }
 function rebuildFlowers(){
   const out=[];
-  BASE.forEach(b=>{ const d=flowerDocs.get("b"+b.id); if(d&&d.del) return; out.push(d&&d.name?Object.assign({},b,{name:d.name}):b); });
+  BASE.forEach(b=>{ const d=flowerDocs.get("b"+b.id); if(d&&d.del) return; const o=Object.assign({},b); if(d&&d.name) o.name=d.name; if(d&&Number.isInteger(d.pt)&&d.pt!==b.pt){ o.pt=d.pt; o.pts=[d.pt]; } out.push(o); });
   const news=[];
   flowerDocs.forEach((d,k)=>{ if(k[0]==="n"&&!d.del&&d.name) news.push({id:d.id,pt:d.pt,name:d.name,chars:[],imgKey:null,img:d.img||"",base:false}); });
   news.sort((a,b)=>a.id-b.id);
@@ -236,7 +237,16 @@ function buildFilters(){
   $("#char").innerHTML=`<option value="">길드원 전체</option>`+members().map(([c])=>`<option${state.char===c?" selected":""}>${esc(c)}</option>`).join("");
 }
 buildFilters();
-function fillMembers(){ const dl=$("#memberList"); if(dl) dl.innerHTML=members().map(([c])=>`<option value="${esc(c)}">`).join(""); }
+function renderSug(){
+  const box=$("#meSug"), inp=$("#meName"); if(!box||!inp) return;
+  if(document.activeElement!==inp){ box.hidden=true; return; }
+  const q=inp.value.trim();
+  const ms=members().map(([c])=>c).filter(c=>!q||c.includes(q));
+  if(!ms.length||(ms.length===1&&ms[0]===q)){ box.hidden=true; return; }
+  box.innerHTML=ms.map(c=>`<button type="button" class="pill" data-n="${esc(c)}">${esc(c)}</button>`).join("");
+  box.hidden=false;
+}
+function fillMembers(){ renderSug(); }
 fillMembers();
 
 $("#ptRow").addEventListener("click",e=>{
@@ -348,7 +358,16 @@ async function toggleClaim(id){
   }catch(e){ toast("저장하지 못했어요. 잠시 후 다시 시도해 주세요."); }
 }
 $("#meName").value=me;
-$("#meName").addEventListener("input",e=>{ me=e.target.value.trim().slice(0,20); saveMe(); render(); });
+$("#meName").addEventListener("input",e=>{ me=e.target.value.trim().slice(0,20); saveMe(); render(); renderSug(); });
+/* 이름 추천: 기본 자동완성 창 대신 입력칸 바로 아래에 목록을 보여줘요 (휴대폰 키보드와 안 겹쳐요) */
+$("#meName").addEventListener("focus",renderSug);
+$("#meName").addEventListener("blur",()=>{ setTimeout(()=>{ if(document.activeElement!==$("#meName")) $("#meSug").hidden=true; },250); });
+$("#meSug").addEventListener("mousedown",e=>e.preventDefault());
+$("#meSug").addEventListener("click",e=>{
+  const b=e.target.closest("[data-n]"); if(!b) return;
+  const inp=$("#meName"); inp.value=b.dataset.n; me=inp.value.trim().slice(0,20); saveMe(); render();
+  $("#meSug").hidden=true; inp.blur();
+});
 
 function applyTheme(t){
   document.documentElement.setAttribute("data-theme",t);
@@ -438,11 +457,12 @@ async function addFlower(name,pt,img){
   const id=Math.floor(Date.now()/1000);
   await dbh.doc("flowers/n"+id).set({k:"n",id,pt:+pt,name,img:img||""});
 }
-async function renameFlower(f,name){
+async function renameFlower(f,name,pt){
   name=name.trim().slice(0,30);
   if(!name) throw uerr("꽃 이름을 입력해 주세요.");
-  if(f.base) await dbh.doc("flowers/b"+f.id).set({k:"b",i:f.id,name,del:false});
-  else{ const d=flowerDocs.get("n"+f.id)||{k:"n",id:f.id,pt:f.pt,img:f.img||""}; await dbh.doc("flowers/n"+f.id).set(Object.assign({},d,{name})); }
+  const p=Number.isInteger(pt)&&pt>0?pt:f.pt;
+  if(f.base) await dbh.doc("flowers/b"+f.id).set({k:"b",i:f.id,name,pt:p,del:false});
+  else{ const d=flowerDocs.get("n"+f.id)||{k:"n",id:f.id,pt:f.pt,img:f.img||""}; await dbh.doc("flowers/n"+f.id).set(Object.assign({},d,{name,pt:p})); }
 }
 async function deleteFlower(f){
   if(f.base) await dbh.doc("flowers/b"+f.id).set({k:"b",i:f.id,name:f.name,del:true});
@@ -450,24 +470,17 @@ async function deleteFlower(f){
   const set=dbClaims.get(f.id); if(set) for(const r of [...set]) await dbh.doc("claims/"+f.id+"_"+hexOf(r)).delete();
 }
 
-/* 사진: 640×640 정사각형으로 통일 (세로/가로 사진은 흐린 배경 위에 통째로 맞춤) */
+/* 사진: 640×640 정사각형으로 통일 (가운데를 기준으로 꽉 차게 확대해서 자름, 배경 없음) */
 function processImg(file){
   return new Promise((res,rej)=>{
     const url=URL.createObjectURL(file), im=new Image();
     im.onload=()=>{
       URL.revokeObjectURL(url);
-      const W=im.naturalWidth,H=im.naturalHeight,r=W/H;
+      const W=im.naturalWidth,H=im.naturalHeight,s0=Math.min(W,H);
       const out=(size,q)=>{
         const c=document.createElement("canvas"); c.width=c.height=size;
-        const x=c.getContext("2d"); x.fillStyle="#111"; x.fillRect(0,0,size,size);
-        if(r<0.9||r>1.1){
-          const s=Math.min(W,H);
-          try{ x.filter="blur("+Math.round(size/30)+"px)"; }catch(e){}
-          x.drawImage(im,(W-s)/2,(H-s)/2,s,s,-size*.05,-size*.05,size*1.1,size*1.1);
-          try{ x.filter="none"; }catch(e){}
-          const k=Math.min(size/W,size/H), w=W*k, h=H*k;
-          x.drawImage(im,(size-w)/2,(size-h)/2,w,h);
-        }else x.drawImage(im,0,0,size,size);
+        const x=c.getContext("2d");
+        x.drawImage(im,(W-s0)/2,(H-s0)/2,s0,s0,0,0,size,size);
         let d=c.toDataURL("image/webp",q);
         if(d.indexOf("data:image/webp")!==0) d=c.toDataURL("image/jpeg",q);
         return d;
@@ -495,7 +508,7 @@ function buildTab(){
     adImg="";
     b.innerHTML=`<label class="lbl">꽃 이름</label><input id="fName" maxlength="30" placeholder="예: 은하수 장미">
     <label class="lbl">점수</label><select id="fPt">${[30,28,25,23,21].map(p=>`<option>${p}</option>`).join("")}</select>
-    <label class="lbl">사진 (기존 꽃과 같은 640×640 정사각형으로 자동 맞춰져요)</label>
+    <label class="lbl">사진 (기존 꽃과 같은 640×640 정사각형으로 꽉 차게 자동 확대돼요)</label>
     <input type="file" id="fImg" accept="image/*">
     <div class="pic" id="fPrev" style="max-width:200px;margin-top:10px" hidden><img alt="미리보기"></div>
     <div class="err" id="adErr"></div>
@@ -520,8 +533,8 @@ function renderList(){
     const q=($("#fQ").value||"").trim().replace(/\s/g,"");
     const fs=FLOWERS.filter(f=>!q||f.name.replace(/\s/g,"").includes(q));
     el.innerHTML=fs.length?fs.map(f=>adEdit==="f:"+f.id
-      ?`<div class="item"><input data-edit value="${esc(f.name)}" maxlength="30"><button class="pill on" data-fsave="${f.id}">저장</button><button class="pill" data-cancel>취소</button></div>`
-      :`<div class="item" style="cursor:default"><span>${esc(f.name)}${f.base?"":" 🆕"}</span><small>${f.pt}점</small><button class="pill" data-fren="${f.id}">이름 수정</button><button class="pill" data-fdel="${f.id}">삭제</button></div>`
+      ?`<div class="item"><input data-edit value="${esc(f.name)}" maxlength="30"><select data-editpt>${[...new Set([30,28,25,23,21].concat(PTS))].sort((a,b)=>b-a).map(p=>`<option value="${p}"${p===f.pt?" selected":""}>${p}점</option>`).join("")}</select><button class="pill on" data-fsave="${f.id}">저장</button><button class="pill" data-cancel>취소</button></div>`
+      :`<div class="item" style="cursor:default"><span>${esc(f.name)}${f.base?"":" 🆕"}</span><small>${(f.pts||[f.pt]).join("·")}점</small><button class="pill" data-fren="${f.id}">수정</button><button class="pill" data-fdel="${f.id}">삭제</button></div>`
     ).join(""):`<div class="hint" style="padding:10px">해당하는 꽃이 없어요.</div>`;
   }
 }
@@ -566,7 +579,7 @@ adBody.addEventListener("click",e=>{
   else if(d.fren!==undefined){ adEdit="f:"+d.fren; renderList(); const i=adBody.querySelector("[data-edit]"); if(i){ i.focus(); i.select(); } }
   else if(d.cancel!==undefined){ adEdit=null; renderList(); }
   else if(d.msave!==undefined) run(async()=>{ await renameMember(d.msave,editVal()); adEdit=null; renderList(); toast("이름을 바꿨어요."); });
-  else if(d.fsave!==undefined) run(async()=>{ const f=FLOWERS.find(x=>x.id===+d.fsave); if(f) await renameFlower(f,editVal()); adEdit=null; renderList(); toast("꽃 이름을 수정했어요."); });
+  else if(d.fsave!==undefined) run(async()=>{ const f=FLOWERS.find(x=>x.id===+d.fsave); if(f){ const ps=adBody.querySelector("[data-editpt]"); await renameFlower(f,editVal(),ps?+ps.value:undefined); } adEdit=null; renderList(); toast("꽃 정보를 수정했어요."); });
   else if(d.mdel!==undefined) twoStep(b,"한 번 더 누르면 삭제",()=>run(async()=>{ await deleteMember(d.mdel); toast(d.mdel+" 님을 삭제했어요."); }));
   else if(d.fdel!==undefined) twoStep(b,"한 번 더 누르면 삭제",()=>run(async()=>{ const f=FLOWERS.find(x=>x.id===+d.fdel); if(f){ await deleteFlower(f); toast(`"${f.name}"을(를) 삭제했어요.`); } }));
   else if(b.id==="fAdd") run(async()=>{ await addFlower($("#fName").value,$("#fPt").value,adImg); toast("꽃을 등록했어요!"); buildTab(); });
