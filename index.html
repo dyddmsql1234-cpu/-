@@ -617,9 +617,16 @@ const PASS="10275"; // 관리자 비밀번호 (바꾸려면 여기 숫자를 수
 let ADMIN_PW="", polling=false, again=false, lastSig="", warned=false;
 async function sbFetch(path,opt){
   const o=opt||{};
-  const r=await fetch(SB_URL+"/rest/v1/"+path,{method:o.method||"GET",headers:Object.assign({apikey:SB_KEY,"Content-Type":"application/json"},SB_KEY.indexOf("sb_")===0?{}:{Authorization:"Bearer "+SB_KEY},o.headers||{}),body:o.body});
-  if(!r.ok){ const t=await r.text(); throw new Error(t||String(r.status)); }
-  const t=await r.text(); return t?JSON.parse(t):null;
+  const ctl=typeof AbortController!=="undefined"?new AbortController():null;
+  const tm=ctl?setTimeout(()=>ctl.abort(),20000):null;
+  try{
+    const r=await fetch(SB_URL+"/rest/v1/"+path,{method:o.method||"GET",cache:"no-store",signal:ctl?ctl.signal:undefined,headers:Object.assign({apikey:SB_KEY,"Content-Type":"application/json"},SB_KEY.indexOf("sb_")===0?{}:{Authorization:"Bearer "+SB_KEY},o.headers||{}),body:o.body});
+    if(!r.ok){ const t=await r.text(); throw new Error("HTTP "+r.status+" "+String(t||"").slice(0,100)); }
+    const t=await r.text(); return t?JSON.parse(t):null;
+  }catch(e){
+    if(e&&e.name==="AbortError") throw new Error("시간 초과");
+    throw e;
+  }finally{ if(tm) clearTimeout(tm); }
 }
 async function sbAll(path){
   const out=[];
@@ -660,9 +667,48 @@ function makeDb(){
     };
   }};
 }
+const RETRY=[1000,2500,5000,10000];
+let failCount=0, retryT=null, lastErr="";
+function applyRows(rows,imgs){
+  dbClaims.clear(); dbRemoved.clear(); memDocs.clear(); flowerDocs.clear();
+  rows.forEach(r=>{
+    const v=r.data; if(!v) return;
+    if(r.path.indexOf("claims/")===0){
+      if(Number.isInteger(v.f)&&typeof v.n==="string"){ if(!dbClaims.has(v.f)) dbClaims.set(v.f,new Set()); dbClaims.get(v.f).add(v.n); }
+    }else if(r.path.indexOf("unclaims/")===0){
+      if(Number.isInteger(v.f)&&typeof v.n==="string"){ if(!dbRemoved.has(v.f)) dbRemoved.set(v.f,new Set()); dbRemoved.get(v.f).add(v.n); }
+    }else if(r.path.indexOf("members/")===0){
+      if(v.t==="add"&&typeof v.n==="string") memDocs.set(v.n,v);
+      else if(v.t==="ren"&&typeof v.from==="string"&&typeof v.to==="string") memDocs.set(v.from,v);
+      else if(v.t==="del"&&typeof v.n==="string") memDocs.set(v.n,v);
+    }else if(r.path.indexOf("flowers/")===0){
+      const o=Object.assign({},v);
+      if(o.k==="b"&&Number.isInteger(o.i)){ if(o.hasImg) o.img=imgs.get("b"+o.i)||""; flowerDocs.set("b"+o.i,o); }
+      else if(o.k==="n"&&Number.isInteger(o.id)){ o.img=imgs.get(r.path.slice(8))||""; flowerDocs.set("n"+o.id,o); }
+    }
+  });
+  rebuildFlowers(); refreshAll();
+}
+/* 마지막으로 불러온 데이터를 기기에 저장해 두었다가, 접속하자마자 먼저 보여줘요 (서버가 느려도 등록된 버전으로 열려요) */
+function saveCache(rows,imgs){
+  try{
+    const arr=[]; imgs.forEach((img,key)=>{ const c=imgCache.get(key); arr.push([key,c?c.iv:null,img]); });
+    try{ localStorage.setItem("dex-cache-v1",JSON.stringify({t:Date.now(),rows,imgs:arr})); }
+    catch(e){ localStorage.setItem("dex-cache-v1",JSON.stringify({t:Date.now(),rows,imgs:[]})); }
+  }catch(e){}
+}
+function loadCache(){
+  try{
+    const c=JSON.parse(localStorage.getItem("dex-cache-v1")||"null");
+    if(!c||!Array.isArray(c.rows)) return;
+    const imgs=new Map();
+    (c.imgs||[]).forEach(a=>{ imgs.set(a[0],a[2]); imgCache.set(a[0],{iv:a[1],img:a[2]}); });
+    applyRows(c.rows,imgs);
+  }catch(e){}
+}
 async function poll(){
   if(polling){ again=true; return; }
-  polling=true;
+  polling=true; let ok=false;
   try{
     const rows=await sbAll("docs?select=path,data&path=not.like.flowerimg/*&order=path");
     const sig=JSON.stringify(rows);
@@ -673,40 +719,31 @@ async function poll(){
         const v=r.data||{}, key=r.path.slice(8);
         if((v.k==="n"||v.k==="b")&&v.hasImg){
           const c=imgCache.get(key);
-          if(c&&c.iv===v.iv) imgs.set(key,c.img);
+          if(c&&c.iv===v.iv&&c.img) imgs.set(key,c.img);
           else{ const x=await sbFetch("docs?select=data&path=eq."+encodeURIComponent("flowerimg/"+key)); const im=(x&&x[0]&&x[0].data&&x[0].data.img)||""; imgCache.set(key,{iv:v.iv,img:im}); imgs.set(key,im); }
         }
       }
-      dbClaims.clear(); dbRemoved.clear(); memDocs.clear(); flowerDocs.clear();
-      rows.forEach(r=>{
-        const v=r.data; if(!v) return;
-        if(r.path.indexOf("claims/")===0){
-          if(Number.isInteger(v.f)&&typeof v.n==="string"){ if(!dbClaims.has(v.f)) dbClaims.set(v.f,new Set()); dbClaims.get(v.f).add(v.n); }
-        }else if(r.path.indexOf("unclaims/")===0){
-          if(Number.isInteger(v.f)&&typeof v.n==="string"){ if(!dbRemoved.has(v.f)) dbRemoved.set(v.f,new Set()); dbRemoved.get(v.f).add(v.n); }
-        }else if(r.path.indexOf("members/")===0){
-          if(v.t==="add"&&typeof v.n==="string") memDocs.set(v.n,v);
-          else if(v.t==="ren"&&typeof v.from==="string"&&typeof v.to==="string") memDocs.set(v.from,v);
-          else if(v.t==="del"&&typeof v.n==="string") memDocs.set(v.n,v);
-        }else if(r.path.indexOf("flowers/")===0){
-          const o=Object.assign({},v);
-          if(o.k==="b"&&Number.isInteger(o.i)){ if(o.hasImg) o.img=imgs.get("b"+o.i)||""; flowerDocs.set("b"+o.i,o); }
-          else if(o.k==="n"&&Number.isInteger(o.id)){ o.img=imgs.get(r.path.slice(8))||""; flowerDocs.set("n"+o.id,o); }
-        }
-      });
-      lastSig=sig; rebuildFlowers(); refreshAll();
+      applyRows(rows,imgs); lastSig=sig; saveCache(rows,imgs);
     }
-    warned=false;
-  }catch(e){
-    if(!warned){ warned=true; toast("서버에 연결하지 못했어요. 인터넷이나 Supabase 설정을 확인해 주세요."); }
-  }
+    ok=true;
+  }catch(e){ lastErr=(e&&e.message)||String(e); try{ console.warn("[Supabase]",lastErr); }catch(x){} }
   polling=false;
+  if(ok){
+    if(failCount>=3) toast("연결됐어요!");
+    failCount=0; warned=false;
+    if(retryT){ clearTimeout(retryT); retryT=null; }
+  }else{
+    failCount++;
+    if(failCount>=3&&!warned){ warned=true; toast("서버 연결이 잘 안 돼요 ("+lastErr.slice(0,40)+"). 자동으로 다시 시도하는 중…"); }
+    if(!retryT) retryT=setTimeout(()=>{ retryT=null; poll(); },RETRY[Math.min(failCount-1,RETRY.length-1)]);
+  }
   if(again){ again=false; poll(); }
 }
 function pollNow(){ poll(); }
 (function initDb(){
   if(!SB_READY){ toast("Supabase 설정이 아직 안 되어 있어요. index.html 위쪽의 url / key를 채워 주세요."); return; }
   dbh=makeDb();
+  loadCache();
   poll();
   setInterval(()=>{ if(!document.hidden) poll(); },8000);
   document.addEventListener("visibilitychange",()=>{ if(!document.hidden) poll(); });
